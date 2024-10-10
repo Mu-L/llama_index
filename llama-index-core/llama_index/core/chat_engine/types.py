@@ -54,11 +54,14 @@ class AgentChatResponse:
     is_dummy_stream: bool = False
     metadata: Optional[Dict[str, Any]] = None
 
-    def __post_init__(self) -> None:
+    def set_source_nodes(self) -> None:
         if self.sources and not self.source_nodes:
             for tool_output in self.sources:
                 if isinstance(tool_output.raw_output, (Response, StreamingResponse)):
                     self.source_nodes.extend(tool_output.raw_output.source_nodes)
+
+    def __post_init__(self) -> None:
+        self.set_source_nodes()
 
     def __str__(self) -> str:
         return self.response
@@ -113,14 +116,18 @@ class StreamingAgentChatResponse:
     is_function_false_event: Optional[asyncio.Event] = None
     # signal when an OpenAI function is being executed
     is_function_not_none_thread_event: Event = field(default_factory=Event)
+    is_writing_to_memory: bool = True
     # Track if an exception occurred
     exception: Optional[Exception] = None
 
-    def __post_init__(self) -> None:
+    def set_source_nodes(self) -> None:
         if self.sources and not self.source_nodes:
             for tool_output in self.sources:
                 if isinstance(tool_output.raw_output, (Response, StreamingResponse)):
                     self.source_nodes.extend(tool_output.raw_output.source_nodes)
+
+    def __post_init__(self) -> None:
+        self.set_source_nodes()
 
     def __str__(self) -> str:
         if self.is_done and not self.queue.empty() and not self.is_function:
@@ -259,39 +266,55 @@ class StreamingAgentChatResponse:
 
     @property
     def response_gen(self) -> Generator[str, None, None]:
-        while not self.is_done or not self.queue.empty():
-            if self.exception is not None:
-                raise self.exception
+        if self.is_writing_to_memory:
+            while not self.is_done or not self.queue.empty():
+                if self.exception is not None:
+                    raise self.exception
 
-            try:
-                delta = self.queue.get(block=False)
-                self.unformatted_response += delta
-                yield delta
-            except Empty:
-                # Queue is empty, but we're not done yet. Sleep for 0 secs to release the GIL and allow other threads to run.
-                time.sleep(0)
+                try:
+                    delta = self.queue.get(block=False)
+                    self.unformatted_response += delta
+                    yield delta
+                except Empty:
+                    # Queue is empty, but we're not done yet. Sleep for 0 secs to release the GIL and allow other threads to run.
+                    time.sleep(0)
+        else:
+            if self.chat_stream is None:
+                raise ValueError("chat_stream is None!")
+
+            for chat_response in self.chat_stream:
+                self.unformatted_response += chat_response.delta or ""
+                yield chat_response.delta or ""
         self.response = self.unformatted_response.strip()
 
     async def async_response_gen(self) -> AsyncGenerator[str, None]:
         self._ensure_async_setup()
         assert self.aqueue is not None
 
-        while True:
-            if not self.aqueue.empty() or not self.is_done:
-                if self.exception is not None:
-                    raise self.exception
+        if self.is_writing_to_memory:
+            while True:
+                if not self.aqueue.empty() or not self.is_done:
+                    if self.exception is not None:
+                        raise self.exception
 
-                try:
-                    delta = await asyncio.wait_for(self.aqueue.get(), timeout=0.1)
-                except asyncio.TimeoutError:
-                    if self.is_done:
-                        break
-                    continue
-                if delta is not None:
-                    self.unformatted_response += delta
-                    yield delta
-            else:
-                break
+                    try:
+                        delta = await asyncio.wait_for(self.aqueue.get(), timeout=0.1)
+                    except asyncio.TimeoutError:
+                        if self.is_done:
+                            break
+                        continue
+                    if delta is not None:
+                        self.unformatted_response += delta
+                        yield delta
+                else:
+                    break
+        else:
+            if self.achat_stream is None:
+                raise ValueError("achat_stream is None!")
+
+            async for chat_response in self.achat_stream:
+                self.unformatted_response += chat_response.delta or ""
+                yield chat_response.delta or ""
         self.response = self.unformatted_response.strip()
 
     def print_response_stream(self) -> None:

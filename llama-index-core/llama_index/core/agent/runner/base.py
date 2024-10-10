@@ -555,6 +555,7 @@ class AgentRunner(BaseAgentRunner):
         step_output.output.sources = self.get_task(task_id).extra_state.get(
             "sources", []
         )
+        step_output.output.set_source_nodes()
 
         return cast(AGENT_CHAT_RESPONSE_TYPE, step_output.output)
 
@@ -702,8 +703,7 @@ class AgentRunner(BaseAgentRunner):
             )
             e.on_end(payload={EventPayload.RESPONSE: chat_response})
 
-        assert isinstance(chat_response, StreamingAgentChatResponse)
-        return chat_response
+        return chat_response  # type: ignore
 
     @dispatcher.span
     @trace_method("chat")
@@ -729,8 +729,7 @@ class AgentRunner(BaseAgentRunner):
             )
             e.on_end(payload={EventPayload.RESPONSE: chat_response})
 
-        assert isinstance(chat_response, StreamingAgentChatResponse)
-        return chat_response
+        return chat_response  # type: ignore
 
     def undo_step(self, task_id: str) -> None:
         """Undo previous step."""
